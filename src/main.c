@@ -14,13 +14,21 @@
  *   pass 2 — write p0 with a routine from the new image found outside p0.
  * Before writing anything, a dry run on the image confirms pass 2 is possible.
  *
+ * Version check (bootloader info record at MBBP_BL_INFO_ADDR, v2+; missing = v1):
+ *   - installed bootloader identical to the image: long blink x1, nothing written
+ *   - image version not newer than the installed one: blink code 4, nothing
+ *     written (build with -DALLOW_BL_DOWNGRADE to force)
+ *
  * Fail-safe rules:
  *   - Anything unexpected BEFORE the first flash write: blink code 5, clear
  *     APP_VALID and reset. The untouched bootloader then waits for a new app.
  *   - A page that will not verify after retries: the bootloader is half-written
  *     and must not run, so stay here blinking code 7 (needs ISP to recover).
- *   - Success: clear APP_VALID and reset into the new bootloader, which waits
- *     for the real application. The slave ID in EEPROM is left alone.
+ *   - Success (every page verified, version record reads back as the image's):
+ *     long blink x2, clear APP_VALID and reset into the new bootloader, which
+ *     waits for the real application. The slave ID in EEPROM is left alone.
+ * Either way the new/kept bootloader reports its version in the HELLO reply,
+ * so the PLC can tell "v1 -> v2" from "unchanged".
  */
 
 #include <avr/io.h>
@@ -44,6 +52,7 @@
 #define SPM_ENTRY_LEN   20u
 #define PAGE_RETRIES    3
 
+#define ERR_NOT_NEWER   4   /* image version not newer than installed — nothing written */
 #define ERR_UNSAFE      5   /* nothing written, safe to fall back */
 #define ERR_BRICKED     7   /* bootloader half-written */
 
@@ -216,6 +225,24 @@ static spm_fn pick_source(uint8_t in_image, uint16_t avoid, uint16_t *where) {
     return spm_via_gadget;
 }
 
+/* Version from the installed bootloader's info record; 1 if it has none
+   (bootloaders from before versioning have 0xFF there). */
+static uint8_t installed_version(void) {
+    const uint16_t a = MBBP_BL_INFO_ADDR;
+    if (pgm_read_byte(a) != 'M' || pgm_read_byte(a + 1) != 'B' ||
+        pgm_read_byte(a + 2) != 'B' || pgm_read_byte(a + 3) != 'L') return 1;
+    uint8_t v = pgm_read_byte(a + 4);
+    return ((uint8_t)(v ^ pgm_read_byte(a + 5)) == 0xFF) ? v : 1;
+}
+
+static void long_blink(uint8_t n) {
+    for (uint8_t i = 0; i < n; i++) {
+        LED_PORT |= _BV(LED_BIT);  _delay_ms(600);
+        LED_PORT &= ~_BV(LED_BIT); _delay_ms(300);
+    }
+    _delay_ms(700);
+}
+
 static void blink(uint8_t n) {
     for (uint8_t i = 0; i < n; i++) {
         LED_PORT |= _BV(LED_BIT);  _delay_ms(150);
@@ -237,6 +264,11 @@ static void fail_safe(void) {
     finish();
 }
 
+static void refuse_not_newer(void) {
+    for (uint8_t i = 0; i < 3; i++) blink(ERR_NOT_NEWER);
+    finish();
+}
+
 static void fail_bricked(void) {
     for (;;) blink(ERR_BRICKED);
 }
@@ -251,7 +283,15 @@ int main(void) {
     DIR_DDR  |= _BV(DIR_BIT);
     DIR_PORT &= ~_BV(DIR_BIT);          /* keep the RS-485 bus released */
 
-    if (range_matches(BL_START, BL_END - BL_START)) finish();   /* already installed */
+    if (range_matches(BL_START, BL_END - BL_START)) {             /* already installed */
+        long_blink(1);
+        finish();
+    }
+#ifndef ALLOW_BL_DOWNGRADE
+    /* Same or older version but different bytes: a downgrade, or a rebuilt
+       bootloader whose MBBP_BL_VERSION was not bumped. Refuse — nothing written. */
+    if (BL_IMAGE_VERSION <= installed_version()) refuse_not_newer();
+#endif
 
     /* Pass 1 source: whatever the installed bootloader offers. Its page (p0)
        is the one page pass 1 cannot touch. */
@@ -275,7 +315,9 @@ int main(void) {
     if (!page_matches(p0) && !write_page(s1, p0)) fail_bricked();
 
     if (!range_matches(BL_START, BL_END - BL_START)) fail_bricked();
+    if (installed_version() != BL_IMAGE_VERSION) fail_bricked();   /* record must read back */
 
+    long_blink(2);                                                  /* success */
     finish();
     return 0;
 }

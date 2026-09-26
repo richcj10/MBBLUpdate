@@ -9,6 +9,9 @@ BL_SIZE = 0x800
 SPM_ENTRY = 0x7FE0
 # do_spm() prologue: movw r30,r24 / movw r0,r20 / sts SPMCSR,r22 / spm
 SPM_ENTRY_SIG = bytes([0xFC, 0x01, 0x0A, 0x01, 0x60, 0x93, 0x57, 0x00, 0xE8, 0x95])
+# Version record (MBBP_BL_INFO_ADDR): 'M' 'B' 'B' 'L' <version> <~version>
+BL_INFO = 0x7FF8
+BL_INFO_MAGIC = b"MBBL"
 
 project_dir = env.subst("$PROJECT_DIR")
 hex_path = os.path.normpath(os.path.join(project_dir, env.GetProjectOption("custom_bl_hex")))
@@ -43,6 +46,13 @@ sig_off = SPM_ENTRY - BL_START
 if bytes(image[sig_off:sig_off + len(SPM_ENTRY_SIG)]) != SPM_ENTRY_SIG:
     raise SystemExit("gen_bl_image: bootloader has no do_spm() at 0x%04X - refusing to build" % SPM_ENTRY)
 
+info_off = BL_INFO - BL_START
+rec = bytes(image[info_off:info_off + 6])
+if rec[:4] != BL_INFO_MAGIC or (rec[4] ^ rec[5]) != 0xFF:
+    raise SystemExit("gen_bl_image: bootloader has no version record at 0x%04X - rebuild it with "
+                     "the .bl_info section (bootloader v2 or later)" % BL_INFO)
+bl_version = rec[4]
+
 crc = 0xFFFF
 for b in image:
     crc ^= b
@@ -55,6 +65,7 @@ lines = [
     "#include <avr/pgmspace.h>",
     "",
     "#define BL_IMAGE_CRC 0x%04X" % crc,
+    "#define BL_IMAGE_VERSION %d   /* from the image's version record */" % bl_version,
     "",
     "static const uint8_t BL_IMAGE[%d] PROGMEM = {" % BL_SIZE,
 ]
@@ -67,4 +78,4 @@ old = open(out_path).read() if os.path.isfile(out_path) else None
 if text != old:
     with open(out_path, "w") as f:
         f.write(text)
-print("gen_bl_image: %s -> src/bl_image.h (CRC 0x%04X)" % (hex_path, crc))
+print("gen_bl_image: %s -> src/bl_image.h (bootloader v%d, CRC 0x%04X)" % (hex_path, bl_version, crc))
