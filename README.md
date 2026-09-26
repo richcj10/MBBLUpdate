@@ -1,6 +1,6 @@
 # ModBusBLUpdater
 
-> **Archived.** This project has moved into [ModBusBootlader](https://github.com/richcj10/ModBusBootlader) under `updater/`, so the updater is always built from the matching bootloader and device config. This repo is kept read-only for history.
+> **Archived.** This project has moved into [ModBusBootlader](https://github.com/richcj10/ModBusBootlader) under [`src/updater/`](https://github.com/richcj10/ModBusBootlader/tree/main/src/updater), so the updater is always built from the matching bootloader and device config. This repo is kept read-only for history.
 
 Replaces the ModBusBL bootloader on an ATmega328P over RS-485, without an ISP programmer.
 
